@@ -1,0 +1,126 @@
+<?php
+
+/*
+--- Wednesday/Thursday for better error messages ---
+*/
+
+require_once 'vendor/autoload.php';
+use Doctrine\DBAL\DriverManager;
+
+// load conf to get API keys
+$config = include('config.php');
+$google_api_key = $config['google_api_key'];
+
+
+// function to call an API
+function callAPI($url) {
+    $response = file_get_contents($url);
+    if ($response === FALSE) {
+        die("Error fetching the data from API");
+    }
+    return json_decode($response, true);
+}
+
+// check if the form has been submitted and the address is set
+header('Content-Type: application/json');
+
+// db connection parameters
+$connectionParams = [
+    'dbname' => 'x',
+    'user' => 'x',
+    'password' => 'x',
+    'host' => 'x',
+    'driver' => 'pdo_mysql',
+];
+
+$conn = DriverManager::getConnection($connectionParams);
+// to determine the https request method
+$RequestMethod = $_SERVER['REQUEST_METHOD'];
+$payload = file_get_contents("php://input");
+$result = json_decode($payload, true);
+
+// switch case for CRUD operations
+switch($RequestMethod) {
+    case 'POST':
+        // handle the post request to create a new address
+        if (isset($result['address'])) {
+            $address = $result['address'];
+            // check if address already exists in the database
+            $sql = $conn->fetchAssociative("SELECT * FROM `addresses` WHERE address = ?", [$address]); // ? is the parameter marker, that will be replaced by a bound variable
+
+            if ($sql) {
+                ['latitude' => $latitude, 'longitude' => $longitude] = $sql;
+                // address already exists in the db
+                echo json_encode(['success' => true, 'message' => 'Address already exists in the database']);
+            } else {
+                // if address is not in the db, call the geocoding endpoint
+                $geocodeUrl = "https://dylanfun.orderlemon.dev/geocode.php?address=" . urlencode($address);
+                $geocodeResponse = callAPI($geocodeUrl);
+                if (isset($geocodeResponse['error'])) {
+                    die($geocodeResponse['error']);
+                }
+                $latitude = $geocodeResponse['latitude'];
+                $longitude = $geocodeResponse['longitude'];
+                // insert the address into the db
+                $conn->insert('addresses', ['address' => $address, 'latitude' => $latitude, 'longitude' => $longitude]);
+                echo json_encode(['success' => true, 'message' => 'The following address has been added', 'latitude' => $latitude, 'longitude' => $longitude, 'address' => $address]);
+            }
+        } else {
+            echo json_encode(['error' => true, 'message' => 'Address not found']);
+        }
+        break;
+
+    case 'GET':
+        if(isset($_GET['id']) && is_numeric($_GET['id'])) {
+            $id = intval($_GET['id']);
+            // handle the get request to get an address
+            $sql = $conn->fetchAssociative("SELECT * FROM `addresses` WHERE `id` = ?", [$id]);
+            if ($sql) {
+                echo json_encode(['success' => true, 'address' => $sql]);
+            } else {
+                echo json_encode(['error' => true, 'message' => 'address not found, id does not exist']);
+            }
+        } elseif(isset($_GET['id']) && !is_numeric($_GET['id'])) {
+            echo json_encode(['error' => true, 'message' => 'Invalid input, please provide valid numeric ID']);
+        } else {   
+            // handle the get request to get all addresses
+            $sql = $conn->fetchAllAssociative("SELECT * FROM `addresses`");
+            echo json_encode(['addresses' => $sql]);
+        }
+        break;
+
+
+    case 'PUT':
+        if(isset($result['address']) && isset($result['latitude']) && isset($result['longitude'])) {
+            ['address' => $address, 'latitude' => $latitude, 'longitude' => $longitude] = $result; // array deconstructing
+            // update the address in the db
+            $conn->update('addresses', ['latitude' => $latitude, 'longitude' => $longitude], ['address' => $address]); // ? is the parameter marker, that will be replaced by a bound variable
+            if ($updateAmount > 0) {
+                echo json_encode(['success' => true, 'message' => 'address updated']);
+            } else {   
+                echo json_encode(['error' => true, 'message' => 'No rows updated, update failed.']);
+            }
+        } else {
+            echo json_encode( ['error' => true, 'message' => 'Invalid input. Please provide address, latitude and longitude.']);     
+        }
+        break;
+
+    case 'DELETE':
+        // handle the delete request to delete by ID instead of by address
+        if(isset($result['id'])) {
+            $id = $result['id'];
+            $deleteAmount = $conn->delete('addresses', ['id' => $id]);
+            if($deleteAmount > 0) { // to check if not putting in 0 or negative value
+                echo json_encode(['success' => true, 'message' => 'address deleted']);
+            } else {
+                echo json_encode( ['error' => "No rows deleted, deleting failed."]);
+            }
+        } else {
+            echo json_encode( ['error' => "Invalid input, please provide valid id"]);     
+        }
+        break;
+    default:
+        // handle any other request methods
+        echo json_encode( ['error' => 'invalid request method']);
+        break;
+}
